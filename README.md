@@ -13,6 +13,10 @@ docker build --tag moheshmohan/spray_tool:latest .
 
 ## Running the tool
 
-The tool can be run against multiple targets with each defined in a configuration file. A sample config file is already included on the repo to target [demo.testfire.net](http://demo.testfire.net/login.jsp). Sample user names and passwords are also included
+The tool can be run against multiple targets with each defined in a configuration file. A sample config file is already included on the repo to target [demo.testfire.net](http://demo.testfire.net/login.jsp). Sample user names and passwords are also included. The below command can be used to run on the included configuration (config.ini)
+
+```
+docker run --rm -v $(pwd):/app --name spray.conta moheshmohan/spray_tool:latest -c config.ini
+```
 
 More detailed explanation on usage will be posted soon in a blog. Watch this space for the link.
