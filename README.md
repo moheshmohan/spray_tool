@@ -15,7 +15,7 @@ docker build --tag moheshmohan/spray_tool:latest .
 If you don't want to build the image on your own, you can pull the latest one from dockerhub. Please note this is pushed using github actions so its automated and expect some stability issues. You can pull the latest image with the below command
 
 ```
-docker pull moheshmohan/spray_tool
+docker pull moheshmohan/spray_tool:main
 ```
 
 
