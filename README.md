@@ -37,6 +37,7 @@ More detailed explanation on usage will be posted soon in a blog here - [H4hacks
 ## Updates
 
 8th June 2022 : Added support for spraying on API. Documentation pending
+
 11th May 2023 : Bug Fixes. Added support for spraying on SMB. Documentation pending
 
 
