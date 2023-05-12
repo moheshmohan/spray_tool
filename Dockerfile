@@ -19,6 +19,12 @@ RUN apt-get install -y google-chrome-stable
 # Installing Unzip
 RUN apt-get install -yqq unzip
 
+# Installing impacket and its dependancies
+RUN apt-get install -y git gcc musl-dev python3-dev libffi-dev openssl libssl-dev cargo
+RUN git clone --depth 1 https://github.com/fortra/impacket.git
+RUN python3 -m pip install impacket/
+
+
 # Download the Chrome Driver
 #RUN wget -O /tmp/chromedriver.zip http://chromedriver.storage.googleapis.com/`curl -sS chromedriver.storage.googleapis.com/LATEST_RELEASE`/chromedriver_linux64.zip
 

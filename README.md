@@ -22,12 +22,27 @@ docker pull moheshmohan/spray_tool:main
 
 The tool can be run against multiple targets with each defined in a configuration file. A sample config file is already included on the repo to target [demo.testfire.net](http://demo.testfire.net/login.jsp). Sample user names and passwords are also included. The below command can be used to run on the included configuration (config.ini)
 
+For linux
 ```
 docker run --rm -v $(pwd):/app --name spray.conta moheshmohan/spray_tool:latest -c config.ini
+```
+
+For Windows
+```
+docker run --rm -v .:/app --name spray.conta moheshmohan/spray_tool:latest -c config.ini
 ```
 
 More detailed explanation on usage will be posted soon in a blog here - [H4hacks blog post](https://www.h4hacks.com/2022/03/multithreaded-password-spray-tool.html)
 
 ## Updates
 
-8th June : Added support for spraying on API. Documentation pending
+8th June 2022 : Added support for spraying on API. Documentation pending
+11th May 2023 : Bug Fixes. Added support for spraying on SMB. Documentation pending
+
+
+
+## Credits 
+
+* [smbspray](https://github.com/absolomb/smbspray)  - Huge thanks for SMB inspiration
+* [Impacket](https://github.com/SecureAuthCorp/impacket) - for doing the heavy lifting
+* [CrackMapExec](https://github.com/byt3bl33d3r/CrackMapExec) - for inspiration and some example code

