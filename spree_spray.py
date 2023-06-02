@@ -42,54 +42,6 @@ import socket
 from impacket.dcerpc.v5 import transport, lsat, samr, lsad
 from impacket.dcerpc.v5.dtypes import MAXIMUM_ALLOWED
 
-
-class EnumLocalAdmins:
-    def __init__(self, smbConnection):
-        self.__smbConnection = smbConnection
-        self.__samrBinding = r'ncacn_np:445[\pipe\samr]'
-        self.__lsaBinding = r'ncacn_np:445[\pipe\lsarpc]'
-
-    def __getDceBinding(self, strBinding):
-        rpc = transport.DCERPCTransportFactory(strBinding)
-        rpc.set_smb_connection(self.__smbConnection)
-        return rpc.get_dce_rpc()
-
-    def getLocalAdmins(self):
-        adminSids = self.__getLocalAdminSids()
-        adminNames = self.__resolveSids(adminSids)
-        return adminSids, adminNames
-
-    def __getLocalAdminSids(self):
-        dce = self.__getDceBinding(self.__samrBinding)
-        dce.connect()
-        dce.bind(samr.MSRPC_UUID_SAMR)
-        resp = samr.hSamrConnect(dce)
-        serverHandle = resp['ServerHandle']
-
-        resp = samr.hSamrLookupDomainInSamServer(dce, serverHandle, 'Builtin')
-        resp = samr.hSamrOpenDomain(dce, serverHandle=serverHandle, domainId=resp['DomainId'])
-        domainHandle = resp['DomainHandle']
-        resp = samr.hSamrOpenAlias(dce, domainHandle, desiredAccess=MAXIMUM_ALLOWED, aliasId=544)
-        resp = samr.hSamrGetMembersInAlias(dce, resp['AliasHandle'])
-        memberSids = []
-        for member in resp['Members']['Sids']:
-            memberSids.append(member['SidPointer'].formatCanonical())
-        dce.disconnect()
-        return memberSids
-
-    def __resolveSids(self, sids):
-        dce = self.__getDceBinding(self.__lsaBinding)
-        dce.connect()
-        dce.bind(lsat.MSRPC_UUID_LSAT)
-        resp = lsad.hLsarOpenPolicy2(dce, MAXIMUM_ALLOWED | lsat.POLICY_LOOKUP_NAMES)
-        policyHandle = resp['PolicyHandle']
-        resp = lsat.hLsarLookupSids(dce, policyHandle, sids, lsat.LSAP_LOOKUP_LEVEL.LsapLookupWksta)
-        names = []
-        for n, item in enumerate(resp['TranslatedNames']['Names']):
-            names.append("{}\\{}".format(resp['ReferencedDomains']['Domains'][item['DomainIndex']]['Name'], item['Name']))
-        dce.disconnect()
-        return names
-
 #Smb stuff end
 
 #ChromeDriverManager().install()
@@ -102,8 +54,12 @@ class EnumLocalAdmins:
 # suppress ssl warning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+print ("Initializing queues for output")
 #main queue for result accumulation
 queue = Queue()
+#statu queue for printing results
+statsp = Queue()
+
 
 csv_file = 'spray_out.csv'
 
@@ -112,16 +68,18 @@ with open(csv_file,'w') as f:
     f.write('Task name,URL,username,password,response,AttackIP,time\n') # NO TRAILING NEWLINE
 
 def consume():
-	while True:
-		if not queue.empty():
-			i = queue.get()
+    print("Consume thread start")
+    i = ""
+    while i != "finish":
+        if not statsp.empty():
+            p = statsp.get()
+            print(p)                   
+        if not queue.empty():
+            i = queue.get()
+            # Row comes out of queue; CSV writing goes here
+            with open(csv_file, 'a', newline='') as f:
+                f.write(i + "\n")
 
-			if i == "finish":
-				return
-
-			# Row comes out of queue; CSV writing goes here
-			with open(csv_file,'a',newline='') as f:
-				f.write(i + "\n")
 
 consumer = Thread(target=consume)
 consumer.setDaemon(True)
@@ -149,9 +107,9 @@ def basic_err_cde_login(uname,taskname, url, password, success_code, threadDelay
     queue.put(row)
 
     if r_status == success_code:
-        print ("[+] Alert!! Response code:  %s with :- %s : %s" % (r_status, uname, password))
+        statsp.put ("[+] Alert!! Response code:  %s with :- %s : %s" % (r_status, uname, password))
     else:
-        print ("[-] Response code:  %s with :- %s : %s" % (r_status, uname, password))
+        statsp.put ("[-] Response code:  %s with :- %s : %s" % (r_status, uname, password))
 
     time.sleep(int(threadDelay))
     #sleep for the delay time and then die
@@ -164,16 +122,16 @@ def ntlm_login(uname,taskname, url, domain, password, threadDelay):
     queue.put(row)
 
     if not resp.status_code == 401:
-        print ("[+] Alert!! Response code:  %s with :- %s\\%s : %s" % (str(resp.status_code),domain, uname, password))
+        statsp.put ("[+] Alert!! Response code:  %s with :- %s\\%s : %s" % (str(resp.status_code),domain, uname, password))
     else:
-        print ("[-] %s\\%s : %s" % (domain, uname, password))
+        statsp.put ("[-] %s\\%s : %s" % (domain, uname, password))
 
     time.sleep(int(threadDelay))
     #sleep for the delay time and then die
 
 def headless_login(uname,taskname, url, password, threadDelay, login_select,password_select,loginbtn_select,success_select,fail_select):
 
-    print ("called headless with url %s username %s password %s" % (url, uname, password))
+    statsp.put ("called headless with url %s username %s password %s" % (url, uname, password))
 
     #chromeOptions = webdriver.ChromeOptions()
     #chromeOptions.add_experimental_option("prefs", {"profile.managed_default_content_settings.images": 2})
@@ -233,15 +191,15 @@ def headless_login(uname,taskname, url, password, threadDelay, login_select,pass
     result = ""
     try:
         fail_element = WebDriverWait(driver,10).until(EC.presence_of_element_located((By.XPATH,fail_select)))
-        print ("failed login")
+        statsp.put ("failed login")
         result = "Fail"
     except Exception as e:
         try:
             success_element =WebDriverWait(driver,10).until(EC.presence_of_element_located((By.XPATH,success_select)))
-            print ("logged in")
+            statsp.put ("logged in")
             result = "Success"
         except Exception as e:
-            print ("failed to login")
+            statsp.put ("failed to login")
             result = "Fail"
 
     #print(driver.current_url)
@@ -253,7 +211,7 @@ def headless_login(uname,taskname, url, password, threadDelay, login_select,pass
     row = taskname + "," + url + "," + uname + "," + password + "," + result + "," + format(ip) + ","+ str(datetime.datetime.now())
     queue.put(row)
 
-    print ("completed headless with url %s username %s password %s with status %s " % (url, uname, password, result))
+    statsp.put ("completed headless with url %s username %s password %s with status %s " % (url, uname, password, result))
 
     time.sleep(int(threadDelay))
     #sleep for the delay time and then die
@@ -345,7 +303,7 @@ def smb_login(uname,taskname, host, domain, password, threadDelay):
                 message = "Error Failed"
             elif error == smb_error_locked:
                 message = "Account Locked"
-                print(message)
+                statsp.put(message)
             else:
                 message = error
             smbclient.close()
@@ -536,6 +494,4 @@ def main():
 
 
 if __name__ == "__main__":
-    #asyncio.run(main())
     main()
-    #asyncio.get_event_loop().run_until_complete(main())

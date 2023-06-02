@@ -68,3 +68,6 @@ COPY spree_spray.py ../scr/spray.py
 RUN chmod 777 ../scr/spray.py
 
 ENTRYPOINT ["python3","../scr/spray.py"]
+
+# Define the command to run when the container starts
+#CMD ["python3", "../scr/spray.py"]
